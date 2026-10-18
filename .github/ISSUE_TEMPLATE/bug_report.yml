@@ -1,0 +1,30 @@
+name: 问题反馈
+description: 告诉我们复现步骤和实际现象，帮助定位问题。
+title: "[问题] "
+body:
+  - type: input
+    id: version
+    attributes:
+      label: 插件与 Chrome 版本
+      placeholder: "例如：Tab Orbit 1.1.0，Chrome 155，Windows 11"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 如何复现
+      description: 请说明使用的模式、打开的标签数量和操作步骤。
+      placeholder: "1. 切换到所有标签模式\n2. 按住 Ctrl + 右键\n3. …"
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: 预期结果与实际结果
+    validations:
+      required: true
+  - type: textarea
+    id: screenshot
+    attributes:
+      label: 截图或补充信息
+      description: 如有截图，请先遮挡私人标签标题和网址。

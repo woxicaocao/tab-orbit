@@ -1,0 +1,19 @@
+# 本地依赖与调试输出
+node_modules/
+test-artifacts/
+release/
+coverage/
+playwright-report/
+test-results/
+*.log
+
+# 浏览器配置、个人设置和凭据
+profile/
+*-profile/
+.env
+.env.*
+!.env.example
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

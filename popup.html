@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>标签轮盘 Tab Orbit</title>
+  <link rel="stylesheet" href="popup.css">
+  <script src="popup.js" defer></script>
+</head>
+<body>
+  <header class="header">
+    <div class="brand-icon" aria-hidden="true"><span></span><i></i><b></b></div>
+    <div class="brand"><h1>标签轮盘</h1><p>TAB ORBIT <span>·</span> 心有所向，一滑即达</p></div>
+    <span class="version">CHROME</span>
+  </header>
+
+  <main>
+    <section class="mode-panel" aria-labelledby="mode-heading">
+      <div class="section-heading"><h2 id="mode-heading">轮盘显示</h2><span id="mode-status" class="mode-status">自定义标签</span></div>
+      <div class="mode-switch" role="group" aria-label="选择轮盘显示模式">
+        <button id="mode-custom" class="selected" type="button" aria-pressed="true"><span class="mode-symbol" aria-hidden="true">◎</span><span><strong>自定义标签</strong><small>常用页面，保持专注</small></span><i aria-hidden="true"></i></button>
+        <button id="mode-all" type="button" aria-pressed="false"><span class="mode-symbol" aria-hidden="true">◉</span><span><strong>所有标签</strong><small>自动显示全部已开页面</small></span><i aria-hidden="true"></i></button>
+      </div>
+      <p id="mode-description" class="mode-description">只显示你添加的标签，较多标签自动分成两圈。</p>
+    </section>
+
+    <section class="gesture-card" aria-label="操作说明">
+      <div class="gesture-orbit" aria-hidden="true"><span></span><i></i><b></b><em></em></div>
+      <div><h2>常用页面，触手可及</h2><p><kbd>Ctrl</kbd><span class="plus">＋</span><kbd>按住右键</kbd><span class="gesture-arrow"> → </span>悬停选择，松开切换</p></div>
+    </section>
+
+    <section class="wheel-section" aria-labelledby="wheel-heading">
+      <div class="section-heading"><h2 id="wheel-heading">我的自定义标签 <span id="wheel-count">0 / 24</span></h2><span class="subtle">按顺序排入双圈</span></div>
+      <p id="custom-edit-hint" class="custom-edit-hint" hidden>正在使用所有标签模式，也可以在这里整理自定义标签。</p>
+      <div id="wheel-items" class="wheel-items" aria-live="polite"></div>
+    </section>
+
+    <section class="tabs-section" aria-labelledby="tabs-heading">
+      <div class="section-heading"><h2 id="tabs-heading">添加到自定义标签</h2><span id="tabs-count" class="subtle"></span></div>
+      <div class="search-wrap"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="搜索标签标题或网址" autocomplete="off" aria-label="搜索已打开标签"><kbd>/</kbd></div>
+      <div class="scope-switch" role="group" aria-label="标签窗口范围">
+        <button id="scope-current" class="selected" type="button" aria-pressed="true">当前窗口</button>
+        <button id="scope-all" type="button" aria-pressed="false">所有窗口</button>
+      </div>
+      <div id="open-tabs" class="open-tabs" aria-live="polite"><div class="empty">正在读取标签…</div></div>
+    </section>
+
+    <details class="help">
+      <summary>使用提示<span aria-hidden="true">⌄</span></summary>
+      <div><p>在普通网页内按住 <b>Ctrl + 鼠标右键</b>。移到标签上会放大，松开右键立即切换；移回圆心或按 <b>Esc</b> 取消。</p><p><b>自定义标签</b>最多添加 24 个，适合日常专注；<b>所有标签</b>自动同步所有窗口的已开页面。较多标签分成两圈，切换模式会保留自定义标签。</p><p>Chrome 新标签页、设置页、Chrome 应用商店等受限页面无法呼出轮盘，但可以作为切换目标。安装或重新加载插件后，请刷新原来打开的网页。</p><p>自定义标签关闭后会保留位置，重新打开完全相同的网址后自动恢复。文件页面需在扩展详情中打开“允许访问文件网址”。</p></div>
+    </details>
+  </main>
+
+  <footer><span class="privacy-dot"></span><span>数据仅保存在本机</span><button id="open-manager" type="button" class="footer-link">在网页中管理 ↗</button></footer>
+  <div id="status" role="status" aria-live="polite" hidden></div>
+</body>
+</html>
