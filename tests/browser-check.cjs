@@ -228,6 +228,11 @@ async function verifyClockwiseOrder(page, name, expectedIds, { offset = 0 } = {}
       await page.keyboard.up("Control");
       await waitShadow(page, ".veil", false);
     }
+    async function waitVisibleTabs(page, expected, message) {
+      const read = async () => (await shadowRead(page, ".node", "boxes"))?.filter(node => node.id !== "__add__").map(node => Number(node.tabId));
+      await until(async () => JSON.stringify(await read()) === JSON.stringify(expected), message);
+      assert.deepEqual(await read(), expected, message);
+    }
     const original = () => pageA.evaluate(() => ({ value: document.querySelector("#original-input").value, background: getComputedStyle(document.body).backgroundColor, h1: getComputedStyle(document.querySelector("h1")).fontSize, color: getComputedStyle(document.querySelector("#original-input")).color }));
     const originalSnapshot = await original();
     await pageA.bringToFront();
@@ -565,13 +570,152 @@ async function verifyClockwiseOrder(page, name, expectedIds, { offset = 0 } = {}
     await cancel(pageA);
     pass("所有标签模式浏览与分页后切回自定义，原 24 个收藏及顺序完整保留");
 
-    await pageB.close();
+    // 仅旁听真实扩展消息，避免“另一窗口的目标本来已 active”掩盖意外激活请求。
+    await worker.evaluate(() => {
+      globalThis.__tabOrbitTestActivationRequests = [];
+      chrome.runtime.onMessage.addListener(message => {
+        if (message?.type === "wheel:activate") globalThis.__tabOrbitTestActivationRequests.push(message.itemId);
+        return false;
+      });
+    });
+    async function releaseWithoutActivation(message) {
+      await worker.evaluate(() => { globalThis.__tabOrbitTestActivationRequests = []; });
+      await release(pageA);
+      const requests = await worker.evaluate(async () => {
+        await new Promise(resolve => setTimeout(resolve, 120));
+        return globalThis.__tabOrbitTestActivationRequests;
+      });
+      assert.deepEqual(requests, [], message);
+      await sameActive(tabA);
+    }
+
+    // 保持真实右键按下，从后台关闭被悬停页，不切换测试网页的焦点。
+    await openWheel(pageA);
+    await moveTo(pageA, nodeSelector(itemB.id));
+    assert.equal(await shadowRead(pageA, nodeSelector(itemB.id), "attribute", "aria-current"), "true");
+    const closingCursor = await shadowRead(pageA, nodeSelector(itemB.id), "box");
+    await pageA.evaluate(() => {
+      window.orbitOriginalTitle = document.title;
+      window.orbitTitleTicks = 0;
+      window.orbitTitleTimer = setInterval(() => { document.title = `持续更新 ${++window.orbitTitleTicks}`; }, 25);
+    });
+    await until(() => pageA.evaluate(() => window.orbitTitleTicks >= 6), "测试页面未持续更新标题");
+    await worker.evaluate(tabId => chrome.tabs.remove(tabId), tabB.id);
     await until(async () => (await getItems()).find(item => item.id === itemB.id)?.available === false, "关闭标签状态未更新");
+    await until(async () => await shadowRead(pageA, nodeSelector(itemB.id)) === 0, "已展开的自定义轮盘未自动移除关闭标签");
+    assert.equal(await shadowRead(pageA, ".veil"), 1, "自动刷新应保留已展开的轮盘");
+    assert.equal(await shadowRead(pageA, ".node"), 23);
+    assert.equal(await shadowRead(pageA, nodeSelector("__add__")), 0, "保存收藏仍满 24 个时不应出现添加入口");
+    assert.equal(await shadowRead(pageA, ".node.is-selected"), 0, "被选标签关闭时必须清空旧选中项");
+    await pageA.mouse.move(closingCursor.x + closingCursor.width / 2 + 3, closingCursor.y + closingCursor.height / 2);
+    assert.equal(await shadowRead(pageA, ".node.is-selected"), 0, "自动刷新后微移不足 6 像素不能误选新位置");
+    const offlineState = await getState();
+    assert.equal(offlineState.items.length, 24);
+    assert.equal(offlineState.wheelItems.some(item => item.id === itemB.id), false);
+    await verifyClockwiseOrder(pageA, "关闭标签后的自定义轮盘", offlineState.wheelItems.map(item => item.id));
+    await pageA.screenshot({ path: path.join(runDir, "wheel-custom-auto-remove.png") });
+    await releaseWithoutActivation("关闭悬停目标后松手不应发送任何激活请求");
+    const closedRow = popup.locator("#wheel-items .wheel-row.closed").filter({ hasText: names[1] });
+    await until(async () => await closedRow.count() === 1, "管理弹窗应保留已关闭的自定义收藏");
+    assert.match(await closedRow.textContent(), /已关闭/);
+    assert.equal(await popup.locator("#custom-edit-hint").isVisible(), true);
+    assert.match(await popup.locator("#custom-edit-hint").textContent(), /轮盘已隐藏.*已关闭收藏/);
+    assert.match(await popup.locator("#custom-edit-hint").textContent(), /收藏额度/);
     const failed = await request("wheel:activate", { itemId: itemB.id });
     assert.equal(failed.ok, false);
-    const restored = await context.newPage(); await restored.goto(base + "/tab/1");
+    await pageA.evaluate(() => { clearInterval(window.orbitTitleTimer); document.title = window.orbitOriginalTitle; });
+    pass("页面持续每 25ms 更新标题时，自定义关闭卡片仍从展开轮盘消失、管理保留，原地或微移松手不误切");
+
+    await openWheel(pageA);
+    assert.equal(await shadowRead(pageA, nodeSelector(itemB.id)), 0);
+    const restored = await worker.evaluate(async details => {
+      const tab = await chrome.tabs.create(details);
+      return { id: tab.id, windowId: tab.windowId };
+    }, { url: base + "/tab/1", active: false, windowId: tabA.windowId });
     await until(async () => (await getItems()).find(item => item.id === itemB.id)?.available === true, "同网址重新打开后未恢复");
-    pass("关闭标签后显示不可用，重新打开相同网址自动恢复已有轮盘位置");
+    await until(async () => await shadowRead(pageA, nodeSelector(itemB.id), "attribute", "data-tab-id") === String(restored.id), "重新打开后已展开轮盘未自动恢复原收藏");
+    const recovered = await getState();
+    assert.deepEqual(recovered.items.map(item => item.id), customSaved.map(item => item.id));
+    assert.equal(await shadowRead(pageA, ".node"), 24);
+    await verifyClockwiseOrder(pageA, "重新打开后的自定义轮盘", recovered.items.map(item => item.id));
+    await until(async () => await closedRow.count() === 0, "恢复后的收藏不应再显示已关闭");
+    await moveTo(pageA, nodeSelector(itemB.id));
+    await release(pageA);
+    await sameActive(restored);
+    pass("相同网址在后台重新打开后已展开轮盘自动恢复原收藏顺序，并可悬停松手切换");
+
+    const restoredPage = await until(async () => context.pages().find(page => page.url() === base + "/tab/1"), "恢复后的真实页面不可用");
+    await restoredPage.waitForLoadState("load");
+    await openWheel(pageA);
+    await moveTo(pageA, nodeSelector(itemB.id));
+    const updatedTitle = "设计参考 · 自动刷新标题";
+    await restoredPage.evaluate(title => { document.title = title; }, updatedTitle);
+    await until(async () => await shadowRead(pageA, nodeSelector(itemB.id) + " .node-title", "text") === updatedTitle, "展开轮盘未自动刷新标签标题");
+    assert.equal(await shadowRead(pageA, nodeSelector(itemB.id), "attribute", "aria-current"), "true", "仅改标题不应清除仍然有效的悬停选择");
+    await release(pageA);
+    await sameActive(restored);
+    pass("仍存活的标签仅更新标题时轮盘实时更新文案并保留选择，原位松手仍切换精确目标");
+
+    await setPopupMode("all");
+    await openWheel(pageA);
+    await waitVisibleTabs(pageA, (await browserTabsOrdered(tabA.windowId)).slice(0, 24).map(tab => tab.id), "所有模式新增回归的初始列表未就绪");
+    const beforeInsert = (await shadowRead(pageA, ".node", "boxes")).find(node => Number(node.tabId) !== tabA.id);
+    assert.ok(beforeInsert);
+    await moveTo(pageA, nodeSelector(beforeInsert.id));
+    const inserted = await worker.evaluate(async details => {
+      const tab = await chrome.tabs.create(details);
+      return { id: tab.id, windowId: tab.windowId };
+    }, { url: base + "/tab/90", active: false, windowId: tabA.windowId, index: 0 });
+    const afterInsert = await browserTabsOrdered(tabA.windowId);
+    await waitVisibleTabs(pageA, afterInsert.slice(0, 24).map(tab => tab.id), "所有模式展开期间新增标签未自动出现在原顺序位置");
+    assert.equal(await shadowRead(pageA, ".veil"), 1);
+    assert.equal(await shadowRead(pageA, ".node.is-selected"), 0, "新增导致位置变化时必须清除旧选择");
+    await pageA.screenshot({ path: path.join(runDir, "wheel-all-auto-add.png") });
+    await releaseWithoutActivation("新增标签导致位置变化后原地松手不应激活其他页面");
+    pass("所有标签模式在展开期间自动显示后台新增标签，并清空可能已换位的旧选择");
+
+    await openWheel(pageA);
+    const withInserted = await shadowRead(pageA, ".node", "boxes");
+    assert.equal(Number(withInserted[0].tabId), inserted.id);
+    const shiftedTarget = withInserted.slice(1).find(node => Number(node.tabId) !== tabA.id);
+    assert.ok(shiftedTarget);
+    await moveTo(pageA, nodeSelector(shiftedTarget.id));
+    assert.equal(await shadowRead(pageA, nodeSelector(shiftedTarget.id), "attribute", "aria-current"), "true");
+    await worker.evaluate(tabId => chrome.tabs.remove(tabId), inserted.id);
+    const afterRemove = await browserTabsOrdered(tabA.windowId);
+    await waitVisibleTabs(pageA, afterRemove.slice(0, 24).map(tab => tab.id), "所有模式展开期间关闭前序标签未自动刷新");
+    assert.equal(await shadowRead(pageA, nodeSelector(shiftedTarget.id)), 1, "被悬停的后续标签应仍然存在");
+    assert.equal(await shadowRead(pageA, ".node.is-selected"), 0, "移除前序标签造成位置重排时必须取消旧选择");
+    await releaseWithoutActivation("删除悬停项的前序标签后原地松手不应激活换位目标");
+    pass("所有模式关闭悬停项前面的标签后自动重排，后续项换位也不会在原地松手时误激活");
+
+    await openWheel(pageA);
+    const beforeShrink = await browserTabsOrdered(tabA.windowId);
+    const oldPages = Math.ceil(beforeShrink.length / 24);
+    assert.ok(oldPages > 1);
+    for (let number = 2; number <= oldPages; number++) {
+      await pageA.mouse.wheel(0, 620);
+      await until(async () => await shadowRead(pageA, ".veil", "attribute", "data-page") === String(number), "收缩回归未进入最后一页");
+    }
+    const shrinkTarget = (await shadowRead(pageA, ".node", "boxes")).find(node => Number(node.tabId) !== tabA.id);
+    assert.ok(shrinkTarget);
+    await moveTo(pageA, nodeSelector(shrinkTarget.id));
+    const keptIds = [tabA.id, ...beforeShrink.filter(tab => tab.id !== tabA.id).slice(0, 7).map(tab => tab.id)];
+    const removedIds = beforeShrink.filter(tab => !keptIds.includes(tab.id)).map(tab => tab.id);
+    assert.ok(removedIds.includes(Number(shrinkTarget.tabId)), "应关闭最后一页被悬停的标签");
+    await worker.evaluate(tabIds => chrome.tabs.remove(tabIds), removedIds);
+    const afterShrink = await browserTabsOrdered(tabA.windowId);
+    assert.equal(afterShrink.length, 8);
+    await waitVisibleTabs(pageA, afterShrink.map(tab => tab.id), "标签批量关闭后展开轮盘未收缩到 8 项");
+    assert.equal(await shadowRead(pageA, ".veil", "attribute", "data-page"), "1");
+    assert.equal(await shadowRead(pageA, ".veil", "attribute", "data-pages"), "1");
+    assert.equal(await shadowRead(pageA, ".veil", "attribute", "data-rings"), "1");
+    assert.equal(await shadowRead(pageA, ".node.is-selected"), 0);
+    const remainingIds = new Map((await getState()).wheelItems.map(item => [item.tabId, item.id]));
+    await verifyClockwiseOrder(pageA, "关闭后分页与双圈收缩", afterShrink.map(tab => remainingIds.get(tab.id)));
+    await pageA.screenshot({ path: path.join(runDir, "wheel-auto-shrink-single.png") });
+    await releaseWithoutActivation("页码收缩且双圈变单圈后原地松手不应激活重排位置");
+    pass("末页标签关闭后页码自动收缩、双圈变单圈，保留展开状态且原地松手不误切");
     assert.deepEqual(errors, []);
     pass("测试网页、扩展管理页均无未捕获 JavaScript 异常");
   } catch (error) {

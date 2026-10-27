@@ -10,6 +10,13 @@ const { randomUUID } = require("node:crypto");
 const source = fs.readFileSync(path.join(__dirname, "..", "background.js"), "utf8");
 const plain = value => JSON.parse(JSON.stringify(value));
 const nextTurn = () => new Promise(resolve => setImmediate(resolve));
+async function waitFor(check, message) {
+  const deadline = Date.now() + 1500;
+  while (!check()) {
+    if (Date.now() >= deadline) throw new Error(message);
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+}
 const tab = (id, extra = {}) => ({ id, windowId: 1, title: `标签 ${id}`, url: `https://example.test/${id}`, active: false, ...extra });
 const pngBytes = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 0]);
 const iconResponse = (bytes = pngBytes, extra = {}) => ({
@@ -40,7 +47,10 @@ function browser(options = {}) {
     runtime: {
       id: "tab-orbit-test", getURL: relative => "chrome-extension://tab-orbit-test/" + relative.replace(/^\//, ""),
       onMessage: event(), onInstalled: event(), onStartup: event(),
-      async sendMessage(message) { calls.runtimeMessages.push(plain(message)); }
+      async sendMessage(message) {
+        calls.runtimeMessages.push(plain(message));
+        if (options.runtimeMessageHook) return options.runtimeMessageHook(message);
+      }
     },
     tabs: {
       onUpdated: event(), onRemoved: event(), onCreated: event(), onAttached: event(), onReplaced: event(), onMoved: event(), onDetached: event(), onActivated: event(),
@@ -56,7 +66,10 @@ function browser(options = {}) {
         return structuredClone(tabs.get(id));
       },
       async create(details) { calls.creates.push(details); throw new Error("测试禁止新建标签"); },
-      async sendMessage(id, message) { calls.tabMessages.push({ id, message: plain(message) }); }
+      async sendMessage(id, message) {
+        calls.tabMessages.push({ id, message: plain(message) });
+        if (options.tabMessageHook) return options.tabMessageHook(id, message);
+      }
     },
     windows: {
       async getLastFocused() { return { id: options.windowId || 1 }; },
@@ -195,7 +208,7 @@ test("浏览器会话重启后的 tab ID 复用不会切到错误网站", async 
   assert.deepEqual(restored.calls.tabUpdates, [{ id: 7, active: true }]);
 });
 
-test("关闭的收藏保留为不可用，激活不创建页面；重新打开原网址后恢复", async () => {
+test("关闭的收藏从轮盘消失但配置保留，激活不创建页面；重新打开原网址后恢复", async () => {
   const env = browser({ tabs: [tab(1)] });
   const worker = env.boot();
   const item = (await worker.send("wheel:toggle-tab", { tabId: 1 })).items[0];
@@ -204,6 +217,11 @@ test("关闭的收藏保留为不可用，激活不创建页面；重新打开�
   let state = await worker.send("wheel:get-state");
   assert.equal(state.items[0].available, false);
   assert.equal(state.items[0].tabId, null);
+  assert.deepEqual(state.wheelItems, []);
+  assert.equal(env.local.wheelItems[0].id, item.id);
+  const list = await worker.send("wheel:list-tabs");
+  assert.deepEqual(list.wheelItems, []);
+  assert.equal(list.items[0].id, item.id);
   assert.equal((await worker.send("wheel:activate", { itemId: item.id })).ok, false);
   assert.deepEqual(env.calls.tabUpdates, []);
   assert.deepEqual(env.calls.creates, []);
@@ -213,6 +231,7 @@ test("关闭的收藏保留为不可用，激活不创建页面；重新打开�
   assert.equal(state.items[0].id, item.id);
   assert.equal(state.items[0].tabId, 55);
   assert.equal(state.items[0].available, true);
+  assert.deepEqual(state.wheelItems.map(value => value.id), [item.id]);
 });
 
 test("同一网址的两个已收藏标签保持独立，关闭一个不会重复占用另一个", async () => {
@@ -226,6 +245,55 @@ test("同一网址的两个已收藏标签保持独立，关闭一个不会重�
   assert.equal(state.items[0].available, false);
   assert.equal(state.items[1].tabId, 2);
   assert.equal(state.items[1].available, true);
+  assert.deepEqual(state.wheelItems.map(item => item.tabId), [2]);
+  assert.equal(new Set(state.wheelItems.map(item => item.tabId)).size, state.wheelItems.length);
+});
+
+test("关闭中间收藏会紧凑隐藏，重开后恢复到原手动顺序而非追加到最后", async () => {
+  const env = browser({ tabs: [tab(1), tab(2), tab(3)] });
+  const worker = env.boot();
+  for (const id of [3, 1, 2]) await worker.send("wheel:toggle-tab", { tabId: id });
+  const original = (await worker.send("wheel:get-state")).items;
+  env.tabs.delete(1);
+  env.chrome.tabs.onRemoved.fire(1, { windowId: 1 });
+  const closed = await worker.send("wheel:get-state");
+  assert.deepEqual(closed.items.map(item => item.id), original.map(item => item.id));
+  assert.deepEqual(closed.wheelItems.map(item => item.tabId), [3, 2]);
+  assert.ok(closed.wheelItems.every(item => item.available));
+  await worker.send("wheel:set-mode", { mode: "all" });
+  const customAgain = await worker.send("wheel:set-mode", { mode: "custom" });
+  assert.deepEqual(customAgain.wheelItems.map(item => item.tabId), [3, 2]);
+  assert.deepEqual(customAgain.items.map(item => item.id), original.map(item => item.id));
+  env.tabs.set(55, tab(55, { url: tab(1).url }));
+  env.chrome.tabs.onCreated.fire(env.tabs.get(55));
+  const reopened = await worker.send("wheel:get-state");
+  assert.deepEqual(reopened.wheelItems.map(item => item.id), original.map(item => item.id));
+  assert.deepEqual(reopened.wheelItems.map(item => item.tabId), [3, 55, 2]);
+  assert.equal(reopened.items.length, 3);
+  assert.deepEqual(env.calls.creates, []);
+});
+
+test("同网址的离线收藏只恢复一个可用实例，新增第二个物理标签后各占原位置", async () => {
+  const sharedUrl = "https://example.test/shared";
+  const env = browser({ tabs: [tab(1, { url: sharedUrl }), tab(2, { url: sharedUrl })] });
+  const worker = env.boot();
+  for (const id of [2, 1]) await worker.send("wheel:toggle-tab", { tabId: id });
+  const original = (await worker.send("wheel:get-state")).items;
+  env.tabs.clear();
+  env.chrome.tabs.onRemoved.fire(1, { windowId: 1 });
+  env.chrome.tabs.onRemoved.fire(2, { windowId: 1 });
+  assert.deepEqual((await worker.send("wheel:get-state")).wheelItems, []);
+  env.tabs.set(10, tab(10, { url: sharedUrl }));
+  env.chrome.tabs.onCreated.fire(env.tabs.get(10));
+  const one = await worker.send("wheel:get-state");
+  assert.equal(one.items.length, 2);
+  assert.deepEqual(one.wheelItems.map(item => item.id), [original[0].id]);
+  assert.deepEqual(one.wheelItems.map(item => item.tabId), [10]);
+  env.tabs.set(11, tab(11, { url: sharedUrl }));
+  env.chrome.tabs.onCreated.fire(env.tabs.get(11));
+  const two = await worker.send("wheel:get-state");
+  assert.deepEqual(two.wheelItems.map(item => item.id), original.map(item => item.id));
+  assert.deepEqual(two.wheelItems.map(item => item.tabId), [10, 11]);
 });
 
 test("跨窗口切换会激活精确标签并将目标窗口置前", async () => {
@@ -460,6 +528,7 @@ test("所有模式关闭标签后旧 ID 不能激活，其他同网址标签不�
   await worker.send("wheel:set-mode", { mode: "all" });
   const item = (await worker.send("wheel:get-state")).wheelItems.find(value => value.tabId === 1);
   env.tabs.delete(1);
+  env.chrome.tabs.onRemoved.fire(1, { windowId: 1 });
   const result = await worker.send("wheel:activate", { itemId: item.id });
   assert.equal(result.ok, false);
   assert.deepEqual(env.calls.tabUpdates, []);
@@ -467,6 +536,73 @@ test("所有模式关闭标签后旧 ID 不能激活，其他同网址标签不�
   const state = await worker.send("wheel:get-state");
   assert.equal(state.wheelItems.length, 1);
   assert.equal(state.wheelItems[0].tabId, 2);
+});
+
+test("关闭事件会自动通知存活网页刷新，缺少 popup 或个别页面接收器不影响其余页面", async () => {
+  let worker;
+  let observed;
+  const env = browser({
+    tabs: [tab(1), tab(2), tab(3, { url: "chrome://settings/" }), tab(4, { url: "javascript:alert(1)" }), tab(5, { url: "file:///local/example.html" })],
+    runtimeMessageHook() { throw new Error("没有打开的 popup"); },
+    async tabMessageHook(id) {
+      if (id === 1) throw new Error("页面还没有内容脚本接收器");
+      if (id === 5) observed = await worker.send("wheel:get-state");
+    }
+  });
+  worker = env.boot();
+  const item = (await worker.send("wheel:toggle-tab", { tabId: 2 })).items[0];
+  env.tabs.delete(2);
+  env.chrome.tabs.onRemoved.fire(2, { windowId: 1 });
+  env.chrome.tabs.onMoved.fire(1, { windowId: 1, fromIndex: 1, toIndex: 0 });
+  env.chrome.tabs.onUpdated.fire(1, { title: "更新标题" }, env.tabs.get(1));
+  await waitFor(() => Boolean(observed), "关闭后未通知存活网页刷新");
+  assert.equal(env.calls.runtimeMessages.length, 1, "突发标签事件应合并一次通知");
+  assert.deepEqual(env.calls.runtimeMessages[0], { type: "wheel:tabs-changed" });
+  assert.deepEqual(env.calls.tabMessages.map(message => message.id), [1, 5]);
+  assert.ok(env.calls.tabMessages.every(message => message.message.type === "wheel:tabs-changed"));
+  assert.deepEqual(observed.wheelItems, []);
+  assert.equal(observed.items[0].id, item.id);
+  assert.equal(observed.items[0].available, false);
+  assert.equal(env.local.wheelItems[0].available, false, "事件自身也会更新收藏状态");
+  assert.deepEqual(env.calls.warnings, []);
+  assert.deepEqual(env.calls.creates, []);
+});
+
+test("持续标题和状态事件不会饿死关闭通知，所有模式在事件流中仍定期刷新", async () => {
+  let worker;
+  const observations = [];
+  const env = browser({
+    tabs: [tab(1), tab(2)],
+    async tabMessageHook(id) {
+      if (id === 1) observations.push(await worker.send("wheel:get-state"));
+    }
+  });
+  worker = env.boot();
+  await worker.send("wheel:set-mode", { mode: "all" });
+  assert.equal((await worker.send("wheel:get-state")).wheelItems.length, 2);
+  let events = 0;
+  const stream = setInterval(() => {
+    events++;
+    Object.assign(env.tabs.get(1), { title: `持续变化 ${events}` });
+    env.chrome.tabs.onUpdated.fire(1, {
+      title: `持续变化 ${events}`,
+      status: events % 2 ? "loading" : "complete"
+    }, env.tabs.get(1));
+  }, 25);
+  try {
+    env.tabs.delete(2);
+    env.chrome.tabs.onRemoved.fire(2, { windowId: 1 });
+    await waitFor(() => observations.length >= 1, "持续更新期间关闭的页面未从轮盘移除");
+    assert.ok(events > 0, "通知应发生在持续事件流期间");
+    assert.deepEqual(observations[0].wheelItems.map(item => item.tabId), [1]);
+    const firstCount = events;
+    await waitFor(() => observations.length >= 2, "持续更新期间没有后续定期通知");
+    assert.ok(events > firstCount, "后续通知期间事件流仍持续运行");
+    assert.ok(observations.every(state => state.totalTabs === 1 && state.wheelItems.length === 1));
+    assert.equal(env.local.wheelItems, undefined, "所有模式不能依赖收藏写入才能刷新");
+  } finally {
+    clearInterval(stream);
+  }
 });
 
 test("所有模式的旧浏览器会话 ID 在 tab ID 被复用时仍拒绝激活", async () => {

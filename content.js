@@ -9,9 +9,9 @@
   let cache = [], wheelCache = [], mode = "custom", cacheReady = false;
   let gesture = null, selected = -1, nodes = [], layout = null;
   let suppressMenuUntil = 0, renderToken = 0, managerToken = 0;
-  let cacheRevision = 0, refreshTimer;
+  let cacheRevision = 0, refreshTimer, cacheRefreshing = false;
   let managerOpen = false, filter = "", onlyCurrent = true, allTabs = [], previousFocus;
-  let managerBusy = false;
+  let managerBusy = false, managerLoading = false;
   let swallowCompatibilityUp = false;
   const iconCache = new Map();
 
@@ -122,7 +122,7 @@
   }
 
   function applyState(result) {
-    const nextMode = result.settings?.mode === "all" ? "all" : "custom";
+    const nextMode = result.settings ? result.settings.mode === "all" ? "all" : "custom" : mode;
     const changed = nextMode !== mode;
     if (changed && gesture) {
       cancelGesture();
@@ -131,35 +131,50 @@
     mode = nextMode;
     if (Array.isArray(result.items)) cache = result.items;
     if (Array.isArray(result.wheelItems)) {
-      wheelCache = result.wheelItems;
+      wheelCache = result.wheelItems.filter(item => item.available !== false);
       cacheReady = true;
     } else if (mode === "custom") {
-      wheelCache = cache;
+      wheelCache = cache.filter(item => item.available !== false);
       cacheReady = true;
     } else if (changed) {
       wheelCache = [];
       cacheReady = false;
     }
-    if (gesture && !gesture.ready && cacheReady) {
-      gesture.items = wheelCache.slice();
-      gesture.pages = Math.max(1, Math.ceil(gesture.items.length / PAGE_SIZE));
-      gesture.ready = true;
-      if (gesture.moved) gesture.reselectFrom = { x: gesture.lastX, y: gesture.lastY };
-      drawWheel();
+    if (gesture && cacheReady) {
+      const targets = items => items.map(item => [item.id, item.tabId, item.windowId, item.url, item.available]);
+      const targetsChanged = !gesture.ready ||
+        (mode === "custom" && gesture.savedCount !== cache.length) ||
+        JSON.stringify(targets(gesture.items)) !== JSON.stringify(targets(wheelCache));
+      const detailsChanged = JSON.stringify(gesture.items) !== JSON.stringify(wheelCache);
+      if (targetsChanged || detailsChanged) {
+        gesture.items = wheelCache.slice();
+        gesture.savedCount = cache.length;
+        gesture.pages = Math.max(1, Math.ceil(gesture.items.length / PAGE_SIZE));
+        gesture.page = Math.min(gesture.page, gesture.pages - 1);
+        gesture.ready = true;
+        // 列表变化后原位置可能变成另一个标签，必须重新移动后才能选择。
+        if (targetsChanged && gesture.moved) gesture.reselectFrom = { x: gesture.lastX, y: gesture.lastY };
+        drawWheel(!targetsChanged);
+      }
     }
   }
 
   async function refreshCache() {
+    if (cacheRefreshing) { scheduleRefresh(); return; }
+    cacheRefreshing = true;
     const revision = ++cacheRevision;
     try {
       const result = await request("wheel:get-state");
       if (revision === cacheRevision) applyState(result);
     } catch { /* 首次唤起时再显示连接错误，普通浏览不打扰用户。 */ }
+    finally { cacheRefreshing = false; }
   }
 
   function scheduleRefresh() {
-    clearTimeout(refreshTimer);
+    // 合并连续事件；在途查询仍可落地，下一次查询再追上最新状态。
+    if (refreshTimer) return;
     refreshTimer = setTimeout(() => {
+      refreshTimer = null;
       refreshCache();
       if (managerOpen && !managerBusy) loadManager();
     }, 60);
@@ -213,19 +228,20 @@
   function gestureEntries() {
     if (!gesture?.ready) return [];
     const items = gesture.items.slice(gesture.page * PAGE_SIZE, (gesture.page + 1) * PAGE_SIZE);
-    if (gesture.mode === "custom" && gesture.items.length < CUSTOM_LIMIT) {
-      items.push({ id: "__add__", title: "添加标签", add: true });
+    if (gesture.mode === "custom" && (gesture.savedCount < CUSTOM_LIMIT || !gesture.items.length)) {
+      items.push({ id: "__add__", title: gesture.savedCount >= CUSTOM_LIMIT ? "管理标签" : "添加标签", add: true });
     }
     return items;
   }
 
   function defaultHubTitle() {
     if (!gesture?.ready) return "正在获取标签…";
-    return gesture.mode === "all" ? "所有标签" : gesture.items.length ? "自定义标签" : "你的标签捷径";
+    return gesture.mode === "all" ? "所有标签" : gesture.items.length ? "自定义标签" : gesture.savedCount ? "收藏暂未打开" : "你的标签捷径";
   }
 
-  function drawWheel() {
+  function drawWheel(preserveSelection = false) {
     if (!gesture || !ensureUI()) return;
+    const selectedId = preserveSelection ? nodes[selected]?.item.id : null;
     wheel?.remove();
     wheel = el("div", "surface veil");
     wheel.dataset.testid = "wheel-overlay";
@@ -235,7 +251,7 @@
     if (gesture.rendered) wheel.style.animation = "none";
     gesture.rendered = true;
     const entries = gestureEntries();
-    const dual = gesture.items.length + (gesture.mode === "custom" && gesture.items.length < CUSTOM_LIMIT ? 1 : 0) > 8;
+    const dual = gesture.items.length > PAGE_SIZE || entries.length > 8;
     layout = fitLayout(entries.length, gesture, dual);
     wheel.dataset.rings = dual ? "2" : "1";
     wheel.style.setProperty("--cx", `${layout.cx}px`);
@@ -292,8 +308,8 @@
         node.append(number);
       }
       node.setAttribute("role", "menuitem");
-      node.setAttribute("aria-label", item.add ? "添加已打开的浏览器标签" : `${order}. ${item.title}${item.available === false ? "（已关闭）" : ""}`);
-      node.title = item.add ? "松开右键，选择已打开的标签" : `第 ${order} 个 · ${item.title}\n${item.url || ""}`;
+      node.setAttribute("aria-label", item.add ? item.title === "管理标签" ? "管理自定义收藏" : "添加已打开的浏览器标签" : `${order}. ${item.title}`);
+      node.title = item.add ? "松开右键，管理自定义标签" : `第 ${order} 个 · ${item.title}\n${item.url || ""}`;
       node.append(item.add ? el("span", "plus", "+") : favicon(item));
       node.append(el("span", "node-title", item.available === false ? `已关闭 · ${item.title}` : item.title));
       node.style.transform = `translate(${x}px, ${y}px)`;
@@ -310,11 +326,11 @@
     disc.append(tip);
     wheel.append(disc);
     shadow.append(wheel);
-    selected = -1;
-    updateSelection(gesture.lastX, gesture.lastY);
+    selected = selectedId ? nodes.findIndex(entry => entry.item.id === selectedId) : -1;
+    updateSelection(gesture.lastX, gesture.lastY, true);
   }
 
-  function updateSelection(x, y) {
+  function updateSelection(x, y, force = false) {
     if (!gesture || !wheel || !layout) return;
     const dx = (x - layout.cx) / layout.scale;
     const dy = (y - layout.cy) / layout.scale;
@@ -325,7 +341,7 @@
       if (contains(nodes[selected], layout.hoverScale)) next = selected;
       else next = nodes.findIndex(entry => contains(entry));
     }
-    if (next === selected) return;
+    if (next === selected && !force) return;
     selected = next;
     nodes.forEach((entry, index) => {
       const active = index === selected;
@@ -335,7 +351,7 @@
     });
     const choice = nodes[selected];
     wheel.querySelector(".hub-title").textContent = choice ? choice.item.title : defaultHubTitle();
-    wheel.querySelector(".hub-caption").textContent = !choice ? gesture.reselectFrom ? "移动鼠标后选择" : "移回圆心取消" : choice.item.add ? "松开后选择标签" : choice.item.available === false ? "此标签已关闭" : "松开右键切换";
+    wheel.querySelector(".hub-caption").textContent = !choice ? gesture.reselectFrom ? "移动鼠标后选择" : "移回圆心取消" : choice.item.add ? choice.item.title === "管理标签" ? "松开后管理收藏" : "松开后选择标签" : "松开右键切换";
     const spoke = wheel.querySelector(".spoke");
     spoke.hidden = !choice;
     if (choice) {
@@ -377,6 +393,8 @@
   }
 
   async function loadManager() {
+    if (managerLoading) { scheduleRefresh(); return; }
+    managerLoading = true;
     const token = ++managerToken;
     try {
       const result = await request("wheel:list-tabs");
@@ -387,6 +405,7 @@
     } catch (error) {
       if (managerOpen && token === managerToken) showToast(error.message);
     }
+    finally { managerLoading = false; }
   }
 
   function tabIsSaved(tab) {
@@ -404,7 +423,7 @@
     });
     manager.querySelector(".description").textContent = mode === "all"
       ? "正在显示所有已打开的标签。下方选择会保留为你的自定义工作标签。"
-      : "只显示你选择的工作标签，切换到所有标签不会清空这些选择。";
+      : `轮盘只显示已打开的自定义标签，关闭后自动隐藏；${cache.filter(item => item.available === false).length} 个未打开收藏保留在插件面板，可在那里整理。`;
     const needle = filter.toLocaleLowerCase().trim();
     const visible = allTabs.filter(tab => (!onlyCurrent || tab.currentWindow) && (!needle || `${tab.title} ${tab.url}`.toLocaleLowerCase().includes(needle)));
     if (!visible.length) list.append(el("div", "empty", needle ? "没有匹配的标签，试试其他关键词。" : "当前没有可添加的标签。"));
@@ -523,20 +542,13 @@
     swallowCompatibilityUp = true;
     cancelGesture();
     gesture = { x: event.clientX, y: event.clientY, lastX: event.clientX, lastY: event.clientY,
-      mode, items: wheelCache.slice(), ready: cacheReady, page: 0, pages: Math.max(1, Math.ceil(wheelCache.length / PAGE_SIZE)) };
+      mode, items: wheelCache.slice(), savedCount: cache.length, ready: cacheReady, page: 0, pages: Math.max(1, Math.ceil(wheelCache.length / PAGE_SIZE)) };
     drawWheel();
     const token = ++renderToken;
     const revision = ++cacheRevision;
     request("wheel:get-state").then(result => {
       if (!gesture || token !== renderToken || revision !== cacheRevision) return;
       applyState(result);
-      // 菜单打开后冻结位置，避免慢响应让正在悬停的目标发生移动。
-      if (gesture && token === renderToken && !gesture.moved) {
-        gesture.items = wheelCache.slice();
-        gesture.pages = Math.max(1, Math.ceil(gesture.items.length / PAGE_SIZE));
-        gesture.page = Math.min(gesture.page, gesture.pages - 1);
-        drawWheel();
-      }
     }).catch(error => {
       if (gesture && token === renderToken) { cancelGesture(); showToast(error.message); }
     });
@@ -615,14 +627,15 @@
     }
   }, true);
   window.addEventListener("blur", cancelGesture);
+  window.addEventListener("focus", scheduleRefresh);
   window.addEventListener("resize", cancelGesture);
   window.addEventListener("pagehide", () => { cancelGesture(); closeManager(); });
   document.addEventListener("visibilitychange", () => { if (document.hidden) cancelGesture(); else refreshCache(); });
   document.addEventListener("fullscreenchange", () => { cancelGesture(); if (host) ensureUI(); });
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "local" || (!changes.wheelItems && !changes.wheelSettings)) return;
-    cacheRevision++;
     if (changes.wheelSettings) {
+      cacheRevision++;
       applyState({ settings: { mode: changes.wheelSettings.newValue?.mode } });
     }
     scheduleRefresh();

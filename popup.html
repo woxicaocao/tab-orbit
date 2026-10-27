@@ -21,7 +21,7 @@
         <button id="mode-custom" class="selected" type="button" aria-pressed="true"><span class="mode-symbol" aria-hidden="true">◎</span><span><strong>自定义标签</strong><small>常用页面，保持专注</small></span><i aria-hidden="true"></i></button>
         <button id="mode-all" type="button" aria-pressed="false"><span class="mode-symbol" aria-hidden="true">◉</span><span><strong>所有标签</strong><small>自动显示全部已开页面</small></span><i aria-hidden="true"></i></button>
       </div>
-      <p id="mode-description" class="mode-description">只显示你添加的标签，较多标签自动分成两圈。</p>
+      <p id="mode-description" class="mode-description">只显示已打开的自定义标签；关闭后自动隐藏，重新打开同一网址后恢复。</p>
     </section>
 
     <section class="gesture-card" aria-label="操作说明">
@@ -30,7 +30,7 @@
     </section>
 
     <section class="wheel-section" aria-labelledby="wheel-heading">
-      <div class="section-heading"><h2 id="wheel-heading">我的自定义标签 <span id="wheel-count">0 / 24</span></h2><span class="subtle">从顶部顺时针 · 先内后外</span></div>
+      <div class="section-heading"><h2 id="wheel-heading">自定义收藏 <span id="wheel-count">0 / 24</span></h2><span class="subtle">从顶部顺时针 · 先内后外</span></div>
       <p id="custom-edit-hint" class="custom-edit-hint" hidden>正在使用所有标签模式，也可以在这里整理自定义标签。</p>
       <div id="wheel-items" class="wheel-items" aria-live="polite"></div>
     </section>
@@ -47,7 +47,7 @@
 
     <details class="help">
       <summary>使用提示<span aria-hidden="true">⌄</span></summary>
-      <div><p>在普通网页内按住 <b>Ctrl + 鼠标右键</b>。移到标签上会放大，松开右键立即切换；移回圆心或按 <b>Esc</b> 取消。</p><p><b>自定义标签</b>最多添加 24 个，适合日常专注；<b>所有标签</b>自动同步所有窗口的已开页面。较多标签分成两圈，切换模式会保留自定义标签。</p><p>Chrome 新标签页、设置页、Chrome 应用商店等受限页面无法呼出轮盘，但可以作为切换目标。安装或重新加载插件后，请刷新原来打开的网页。</p><p>自定义标签关闭后会保留位置，重新打开完全相同的网址后自动恢复。文件页面需在扩展详情中打开“允许访问文件网址”。</p></div>
+      <div><p>在普通网页内按住 <b>Ctrl + 鼠标右键</b>。移到标签上会放大，松开右键立即切换；移回圆心或按 <b>Esc</b> 取消。</p><p><b>自定义标签</b>最多添加 24 个，适合日常专注；<b>所有标签</b>自动同步所有窗口的已开页面。较多标签分成两圈，切换模式会保留自定义标签。</p><p>Chrome 新标签页、设置页、Chrome 应用商店等受限页面无法呼出轮盘，但可以作为切换目标。安装或重新加载插件后，请刷新原来打开的网页。</p><p>关闭标签后，轮盘会自动移除卡片。自定义收藏仍保留在此面板、占用收藏额度，重新打开同一网址后按收藏顺序恢复；也可点击 × 移除收藏。轮盘展开时列表变化会清空选择，请重新移动鼠标后再松手。文件页面需在扩展详情中打开“允许访问文件网址”。</p></div>
     </details>
   </main>
 

@@ -5,6 +5,7 @@ let state = { tabs: [], items: [], wheelItems: [], settings: { mode: 'custom' },
 let scope = 'current';
 let busy = false;
 let refreshTimer;
+let refreshing = false;
 let toastTimer;
 let loadRevision = 0;
 const iconCache = new Map();
@@ -111,9 +112,14 @@ function renderMode() {
   }
   $('mode-status').textContent = mode === 'all' ? `所有标签 · ${state.totalTabs} 个` : '自定义标签';
   $('mode-description').textContent = mode === 'all'
-    ? `共 ${state.totalTabs} 个标签，优先当前窗口，按标签栏原顺序排列。`
-    : '只显示你添加的标签，较多标签自动分成两圈。';
-  $('custom-edit-hint').hidden = mode !== 'all';
+    ? `共 ${state.totalTabs} 个标签，自动同步打开与关闭，按标签栏原顺序排列。`
+    : '只显示已打开的自定义标签；关闭后自动隐藏，重新打开同一网址后恢复。';
+  const hiddenCount = state.items.filter(item => !item.available).length;
+  const hint = $('custom-edit-hint');
+  hint.hidden = mode !== 'all' && hiddenCount === 0;
+  hint.textContent = hiddenCount
+    ? `轮盘已隐藏 ${hiddenCount} 个已关闭收藏，它们仍占收藏额度；点击 × 可移除，重开同一网址可恢复。`
+    : '正在使用所有标签模式，也可以在这里整理自定义收藏。';
 }
 
 function renderWheel() {
@@ -143,7 +149,7 @@ function renderWheel() {
     target.className = 'saved-target';
     target.setAttribute('role', 'button');
     target.tabIndex = 0;
-    target.title = item.available ? `切换到「${item.title}」` : '这个标签已关闭，重新打开同一网址后自动恢复';
+    target.title = item.available ? `切换到「${item.title}」` : '已从轮盘隐藏，收藏仍保留；重新打开同一网址后自动恢复';
     target.setAttribute('aria-label', target.title);
     const activate = async () => {
       if (busy) return;
@@ -168,7 +174,7 @@ function renderWheel() {
       const badge = document.createElement('span');
       badge.className = 'closed-badge';
       badge.textContent = '已关闭';
-      badge.title = '重新打开完全相同的网址后会自动恢复';
+      badge.title = '仅在管理面板保留，已从轮盘隐藏；重新打开完全相同的网址后自动恢复';
       row.append(badge);
     }
     const actions = document.createElement('div');
@@ -228,7 +234,8 @@ function render() {
 }
 
 async function refresh() {
-  if (busy) { scheduleRefresh(); return; }
+  if (busy || refreshing) { scheduleRefresh(); return; }
+  refreshing = true;
   const revision = ++loadRevision;
   try {
     const response = await request({ type: 'wheel:list-tabs' });
@@ -239,11 +246,15 @@ async function refresh() {
     if (revision !== loadRevision) return;
     notify(error.message, true);
   }
+  finally { refreshing = false; }
 }
 
 function scheduleRefresh() {
-  clearTimeout(refreshTimer);
-  refreshTimer = setTimeout(refresh, 90);
+  if (refreshTimer) return;
+  refreshTimer = setTimeout(() => {
+    refreshTimer = null;
+    refresh();
+  }, 90);
 }
 
 async function mutate(message, successMessage) {

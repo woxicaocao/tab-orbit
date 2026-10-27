@@ -199,7 +199,8 @@ function publicState(state) {
       favIconUrl: safeIcon(tab.favIconUrl),
       available: true
     }))
-    : items;
+    // Saved configuration keeps its manual order; the wheel shows live tabs only.
+    : items.filter((item) => item.available);
   return {
     ok: true,
     items,
@@ -349,8 +350,10 @@ function refreshMetadata() {
 }
 
 function scheduleTabsChanged() {
-  clearTimeout(tabsChangedTimer);
+  // Coalesce bursts without postponing updates indefinitely on changing titles.
+  if (tabsChangedTimer != null) return;
   tabsChangedTimer = setTimeout(async () => {
+    tabsChangedTimer = null;
     // Notifications carry no tab metadata and never create storage writes.
     chrome.runtime.sendMessage({ type: 'wheel:tabs-changed' }).catch(() => {});
     try {
