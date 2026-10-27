@@ -1,6 +1,6 @@
 {
   "name": "chrome-tab-orbit",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "private": true,
   "description": "按住 Ctrl 与鼠标右键，通过圆形轮盘切换 Chrome 标签。",
   "repository": {

@@ -504,3 +504,57 @@ test("所有模式实时反映新增、导航和跨窗口移动，收藏列表�
   assert.equal(changed.url, "https://example.test/new");
   assert.equal(changed.windowId, 9);
 });
+
+test("所有模式依据浏览器 index 排序，不依赖 query 返回顺序或标签 ID", async () => {
+  const env = browser({ windowId: 9, tabs: [tab(80, { windowId: 9, index: 2 }), tab(90, { windowId: 9, index: 0 }), tab(3, { windowId: 9, index: 1 })] });
+  const worker = env.boot();
+  await worker.send("wheel:set-mode", { mode: "all" });
+  const state = await worker.send("wheel:get-state");
+  assert.deepEqual(state.wheelItems.map(item => item.tabId), [90, 3, 80]);
+});
+
+test("所有模式优先当前窗口，窗口内从左到右，其他窗口也保持 index 顺序", async () => {
+  const env = browser({ windowId: 9, tabs: [tab(91, { windowId: 9, index: 1 }), tab(21, { windowId: 2, index: 1 }), tab(30, { windowId: 3, index: 0 }), tab(90, { windowId: 9, index: 0 }), tab(20, { windowId: 2, index: 0 })] });
+  const worker = env.boot();
+  await worker.send("wheel:set-mode", { mode: "all" });
+  assert.deepEqual((await worker.send("wheel:get-state")).wheelItems.map(item => item.tabId), [90, 91, 20, 21, 30]);
+  const otherSender = { id: env.chrome.runtime.id, tab: { id: 1000, windowId: 2 } };
+  assert.deepEqual((await worker.send("wheel:get-state", {}, otherSender)).wheelItems.map(item => item.tabId), [20, 21, 30, 90, 91]);
+  const list = await worker.send("wheel:list-tabs", {}, otherSender);
+  assert.deepEqual(list.tabs.map(item => item.id), [20, 21, 30, 90, 91]);
+  assert.deepEqual(list.wheelItems.map(item => item.tabId), [20, 21, 30, 90, 91]);
+  assert.deepEqual(list.tabs.filter(item => item.currentWindow).map(item => item.id), [20, 21]);
+  const popup = { id: env.chrome.runtime.id };
+  assert.deepEqual((await worker.send("wheel:get-state", {}, popup)).wheelItems.map(item => item.tabId), [90, 91, 20, 21, 30]);
+});
+
+test("仅切换 active 标签不会将所有模式改成最近使用顺序", async () => {
+  const env = browser({ tabs: [tab(3, { index: 2, active: true }), tab(1, { index: 0 }), tab(2, { index: 1 })] });
+  const worker = env.boot();
+  await worker.send("wheel:set-mode", { mode: "all" });
+  const before = (await worker.send("wheel:get-state")).wheelItems.map(item => item.tabId);
+  for (const target of [2, 1, 3]) {
+    for (const value of env.tabs.values()) value.active = value.id === target;
+    env.chrome.tabs.onActivated.fire({ tabId: target, windowId: 1 });
+    assert.deepEqual((await worker.send("wheel:get-state")).wheelItems.map(item => item.tabId), before);
+  }
+  assert.deepEqual(before, [1, 2, 3]);
+});
+
+test("浏览器拖动改变 index 只改变所有模式，自定义继续保持用户排序", async () => {
+  const env = browser({ tabs: [tab(1, { index: 0 }), tab(2, { index: 1 }), tab(3, { index: 2 })] });
+  const worker = env.boot();
+  for (const id of [3, 1, 2]) await worker.send("wheel:toggle-tab", { tabId: id });
+  const original = (await worker.send("wheel:get-state")).items;
+  env.tabs.get(2).index = 0;
+  env.tabs.get(1).index = 1;
+  env.tabs.get(3).index = 2;
+  env.chrome.tabs.onMoved.fire(2, { windowId: 1, fromIndex: 1, toIndex: 0 });
+  const custom = await worker.send("wheel:get-state");
+  assert.deepEqual(custom.wheelItems.map(item => item.tabId), [3, 1, 2]);
+  assert.deepEqual(custom.items.map(item => item.id), original.map(item => item.id));
+  await worker.send("wheel:set-mode", { mode: "all" });
+  const all = await worker.send("wheel:get-state");
+  assert.deepEqual(all.wheelItems.map(item => item.tabId), [2, 1, 3]);
+  assert.deepEqual(all.items.map(item => item.id), original.map(item => item.id));
+});

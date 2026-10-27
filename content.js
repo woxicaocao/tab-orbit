@@ -35,6 +35,7 @@
     .hub-title { max-width: 108px; font-size: 13px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .hub-caption { font-size: 10px; color: #8f92aa; margin-top: 4px; letter-spacing: .4px; }
     .hub-mode { font-size: 9px; color: #baace8; margin-top: 5px; }
+    .hub-order { font-size: 9px; color: #8b879e; margin-top: 3px; }
     .node { position: absolute; width: var(--node-width); height: var(--node-height); left: 50%; top: 50%; margin-left: calc(var(--node-width) / -2); margin-top: calc(var(--node-height) / -2); border: 1px solid #b7b3dd30; border-radius: 16px; background: #171a2bf2; box-shadow: 0 8px 24px #0004, inset 0 1px #ffffff08; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 5px; padding: 8px; color: #e5e3f2; transition: transform 130ms cubic-bezier(.2,.8,.2,1), border-color 130ms, background 130ms, box-shadow 130ms; will-change: transform; backdrop-filter: blur(18px); }
     .node.is-selected { z-index: 5; border-color: #d7c6ff; background: #504079fa; box-shadow: 0 0 0 4px #b698ff18, 0 12px 40px #0005, 0 0 36px #ab86ff35; }
     .node.is-closed { opacity: .5; }
@@ -43,6 +44,8 @@
     .node img { width: 22px; height: 22px; object-fit: contain; border-radius: 5px; }
     .favicon { width: 23px; height: 23px; border-radius: 6px; background: #b4a0f72e; color: #d4c5ff; display: grid; place-items: center; flex: none; font-size: 13px; font-weight: 700; }
     .node-title { max-width: 100%; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; font-size: 11px; font-weight: 550; }
+    .sequence-number { position: absolute; left: 7px; top: 5px; font-size: 9px; line-height: 12px; font-weight: 550; color: #8e87a7; font-variant-numeric: tabular-nums; pointer-events: none; }
+    .node.is-selected .sequence-number { color: #e1d3ff; }
     .plus { width: 23px; height: 23px; font-size: 25px; font-weight: 300; line-height: 20px; }
     .wheel-tip { position: absolute; top: calc(var(--size) - 10px); left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 9px; white-space: nowrap; padding: 9px 16px; border: 1px solid #bcb5e322; border-radius: 30px; background: #10121fe8; color: #b9b6cc; font-size: 11px; backdrop-filter: blur(12px); }
     .page-indicator { color: #c3b4f1; }
@@ -263,14 +266,14 @@
     const logo = el("span", "hub-logo", "◎");
     logo.style.fontSize = "25px";
     logo.style.lineHeight = "24px";
-    hub.append(logo, el("div", "hub-title", defaultHubTitle()), el("div", "hub-caption", gesture.reselectFrom ? "移动鼠标后选择" : "移回圆心取消"), el("div", "hub-mode", `${gesture.mode === "all" ? "所有" : "自定义"} · ${gesture.items.length} 个${gesture.pages > 1 ? ` · ${gesture.page + 1}/${gesture.pages}` : ""}`));
+    hub.append(logo, el("div", "hub-title", defaultHubTitle()), el("div", "hub-caption", gesture.reselectFrom ? "移动鼠标后选择" : "移回圆心取消"), el("div", "hub-mode", `${gesture.mode === "all" ? "所有" : "自定义"} · ${gesture.items.length} 个${gesture.pages > 1 ? ` · ${gesture.page + 1}/${gesture.pages}` : ""}`), el("div", "hub-order", dual && entries.length > 8 ? "顺时针 · 先内后外" : "从顶部顺时针"));
     disc.append(hub);
-    const innerCount = dual ? (entries.length > 8 ? Math.min(8, Math.ceil(entries.length / 3)) : entries.length) : entries.length;
-    const outerCount = entries.length - innerCount;
+    // 固定前 8 个在内圈、后 16 个在外圈。保留空槽，增减标签时不重新均分或换圈。
+    const innerCount = dual ? Math.min(8, entries.length) : entries.length;
     nodes = entries.map((item, index) => {
       const outer = index >= innerCount;
       const ringIndex = outer ? index - innerCount : index;
-      const ringCount = outer ? outerCount : innerCount;
+      const ringCount = dual ? (outer ? 16 : 8) : innerCount;
       const radius = outer ? layout.outerRadius : layout.radius;
       const angle = -Math.PI / 2 + ringIndex * 2 * Math.PI / ringCount;
       const x = Math.cos(angle) * radius;
@@ -281,9 +284,16 @@
       node.dataset.itemId = item.id;
       node.dataset.ring = outer ? "outer" : "inner";
       if (Number.isInteger(item.tabId)) node.dataset.tabId = String(item.tabId);
+      const order = gesture.page * PAGE_SIZE + index + 1;
+      if (!item.add) {
+        node.dataset.order = String(order);
+        const number = el("span", "sequence-number", String(order).padStart(2, "0"));
+        number.setAttribute("aria-hidden", "true");
+        node.append(number);
+      }
       node.setAttribute("role", "menuitem");
-      node.setAttribute("aria-label", item.add ? "添加已打开的浏览器标签" : `${item.title}${item.available === false ? "（已关闭）" : ""}`);
-      node.title = item.add ? "松开右键，选择已打开的标签" : `${item.title}\n${item.url || ""}`;
+      node.setAttribute("aria-label", item.add ? "添加已打开的浏览器标签" : `${order}. ${item.title}${item.available === false ? "（已关闭）" : ""}`);
+      node.title = item.add ? "松开右键，选择已打开的标签" : `第 ${order} 个 · ${item.title}\n${item.url || ""}`;
       node.append(item.add ? el("span", "plus", "+") : favicon(item));
       node.append(el("span", "node-title", item.available === false ? `已关闭 · ${item.title}` : item.title));
       node.style.transform = `translate(${x}px, ${y}px)`;

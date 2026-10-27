@@ -111,7 +111,7 @@ function renderMode() {
   }
   $('mode-status').textContent = mode === 'all' ? `所有标签 · ${state.totalTabs} 个` : '自定义标签';
   $('mode-description').textContent = mode === 'all'
-    ? `当前有 ${state.totalTabs} 个可切换标签，自动同步所有窗口。`
+    ? `共 ${state.totalTabs} 个标签，优先当前窗口，按标签栏原顺序排列。`
     : '只显示你添加的标签，较多标签自动分成两圈。';
   $('custom-edit-hint').hidden = mode !== 'all';
 }

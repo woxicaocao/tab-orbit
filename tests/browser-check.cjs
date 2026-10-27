@@ -59,7 +59,15 @@ async function shadowRead(page, selector, action = "count", argument) {
     functionDeclaration: `function(selector, action, argument) {
       const nodes = [...this.querySelectorAll(selector)];
       const node = nodes[0];
-      const box = value => { const r = value.getBoundingClientRect(); return { id: value.dataset.itemId, tabId: value.dataset.tabId, ring: value.dataset.ring, x:r.x, y:r.y, width:r.width, height:r.height }; };
+      const box = value => {
+        const r = value.getBoundingClientRect(), badge = value.querySelector('.sequence-number');
+        const badgeStyle = badge ? getComputedStyle(badge) : null, badgeBox = badge?.getBoundingClientRect();
+        return { id: value.dataset.itemId, tabId: value.dataset.tabId, ring: value.dataset.ring,
+          order: value.dataset.order ? Number(value.dataset.order) : null,
+          sequence: badge?.textContent ?? null,
+          sequenceVisible: Boolean(badge && badgeStyle.display !== 'none' && badgeStyle.visibility !== 'hidden' && badgeBox.width > 0 && badgeBox.height > 0),
+          x:r.x, y:r.y, width:r.width, height:r.height };
+      };
       if (action === 'count') return nodes.length;
       if (action === 'box') return node ? box(node) : null;
       if (action === 'boxes') return nodes.map(box);
@@ -81,6 +89,47 @@ async function clickShadow(page, selector) {
   await waitShadow(page, selector);
   const box = await shadowRead(page, selector, "box");
   await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+}
+
+async function verifyClockwiseOrder(page, name, expectedIds, { offset = 0 } = {}) {
+  await until(async () => {
+    const current = await shadowRead(page, ".node", "boxes");
+    return JSON.stringify(current?.filter(box => box.id !== "__add__").map(box => box.id)) === JSON.stringify(expectedIds);
+  }, name + " 标签顺序未与预期原列表一致");
+  const boxes = await shadowRead(page, ".node", "boxes");
+  const items = boxes.filter(box => box.id !== "__add__");
+  assert.deepEqual(items.map(box => box.id), expectedIds, name + " DOM 顺序应对应原列表");
+  const hub = await shadowRead(page, ".hub", "box");
+  assert.ok(hub, name + " 缺少圆心");
+  const cx = hub.x + hub.width / 2, cy = hub.y + hub.height / 2;
+  const dual = await shadowRead(page, ".veil", "attribute", "data-rings") === "2";
+  const nodeGeometry = boxes.map((box, index) => {
+    const ring = dual && index >= 8 ? "outer" : "inner";
+    const slot = ring === "outer" ? index - 8 : index;
+    const slots = dual ? ring === "inner" ? 8 : 16 : boxes.length;
+    const dx = box.x + box.width / 2 - cx, dy = box.y + box.height / 2 - cy;
+    const angle = (Math.atan2(dx, -dy) + Math.PI * 2) % (Math.PI * 2);
+    const expected = slot * Math.PI * 2 / slots;
+    const difference = Math.abs(Math.atan2(Math.sin(angle - expected), Math.cos(angle - expected)));
+    assert.equal(box.ring, ring, name + " 前 8 个必须在内圈，之后在外圈：" + box.id);
+    assert.ok(difference < .012, name + " 必须从 12 点按固定角槽顺时针排列：" + JSON.stringify({ id: box.id, angle, expected }));
+    return { ...box, angle, radius: Math.hypot(dx, dy) };
+  });
+  for (const [index, box] of items.entries()) {
+    const expectedOrder = offset + index + 1;
+    assert.equal(box.order, expectedOrder, name + " 全局 data-order 序号错误");
+    assert.equal(box.sequence, String(expectedOrder).padStart(2, "0"), name + " 可见编号错误");
+    assert.equal(box.sequenceVisible, true, name + " 编号应真实可见");
+  }
+  const add = boxes.find(box => box.id === "__add__");
+  if (add) {
+    assert.equal(boxes.at(-1).id, "__add__", name + " 添加入口应位于最后");
+    assert.equal(add.sequence, null, name + " 添加入口不参与编号");
+  }
+  const orderHint = await shadowRead(page, ".hub-order", "text");
+  assert.match(orderHint, /顺时针/, name + " 应提供顺时针阅读提示");
+  if (dual && nodeGeometry.some(box => box.ring === "outer")) assert.match(orderHint, /先内后外/, name + " 双圈应说明先内后外");
+  return { dual, nodes: nodeGeometry };
 }
 
 (async () => {
@@ -138,6 +187,15 @@ async function clickShadow(page, selector) {
       const result = await request("wheel:list-tabs");
       return result.tabs.find(tab => tab.url === page.url());
     };
+    const browserTabsOrdered = preferredWindowId => worker.evaluate(async preferredWindowId => {
+      const tabs = await chrome.tabs.query({});
+      const protocols = new Set(["http:", "https:", "file:", "chrome:", "about:"]);
+      return tabs.filter(tab => {
+        try { return Number.isInteger(tab.id) && protocols.has(new URL(tab.url || tab.pendingUrl || "").protocol); }
+        catch { return false; }
+      }).sort((a, b) => Number(b.windowId === preferredWindowId) - Number(a.windowId === preferredWindowId) || a.windowId - b.windowId || a.index - b.index || a.id - b.id)
+        .map(tab => ({ id: tab.id, windowId: tab.windowId, index: tab.index }));
+    }, preferredWindowId);
     const pageA = await context.newPage(); await pageA.goto(base + "/tab/0");
     const pageB = await context.newPage(); await pageB.goto(base + "/tab/1");
     const pageC = await context.newPage(); await pageC.goto(base + "/tab/2");
@@ -192,6 +250,8 @@ async function clickShadow(page, selector) {
     assert.equal(await shadowRead(pageA, ".veil", "attribute", "data-rings"), "1", "少量标签使用单圈");
     assert.equal(await shadowRead(pageA, '.node[data-ring="outer"]'), 0);
     assert.equal(await shadowRead(pageA, nodeSelector("__add__")), 0);
+    assert.deepEqual(automatic.wheelItems.map(item => item.tabId), (await browserTabsOrdered(tabA.windowId)).map(tab => tab.id));
+    await verifyClockwiseOrder(pageA, "少量所有标签", automatic.wheelItems.map(item => item.id));
     await pageA.screenshot({ path: path.join(runDir, "wheel-all-initial.png") });
     await cancel(pageA);
     await setPopupMode("custom");
@@ -318,10 +378,22 @@ async function clickShadow(page, selector) {
     for (let i = 4; i < 24; i++) {
       const page = await context.newPage(); await page.goto(base + "/tab/" + i); extraPages.push(page);
     }
+    const orderSnapshots = new Map();
     for (const page of [pageA, pageC, ...extraPages]) {
       const target = await getTab(page);
       const result = await request("wheel:toggle-tab", { tabId: target.id });
       assert.equal(result.ok, true);
+      if ([9, 12].includes(result.items.length)) {
+        await openWheel(pageA);
+        await until(async () => await shadowRead(pageA, ".node") === result.items.length + 1, "中间数量的双圈未刷新");
+        const snapshot = await verifyClockwiseOrder(pageA, `${result.items.length} 个自定义标签`, result.items.map(item => item.id));
+        assert.equal(await shadowRead(pageA, '.node[data-ring="inner"]'), 8);
+        assert.equal(await shadowRead(pageA, '.node[data-ring="outer"]'), result.items.length + 1 - 8);
+        orderSnapshots.set(result.items.length, snapshot);
+        layouts.push({ name: `${result.items.length} 标签顺序`, ...snapshot });
+        await pageA.screenshot({ path: path.join(runDir, `wheel-order-${result.items.length}.png`) });
+        await cancel(pageA);
+      }
     }
     assert.equal((await getItems()).length, 24);
     const customSaved = (await getItems()).map(item => ({ id: item.id, tabId: item.tabId }));
@@ -330,6 +402,18 @@ async function clickShadow(page, selector) {
     assert.equal(await shadowRead(pageA, nodeSelector("__add__")), 0, "满 24 收藏时隐藏添加入口");
     assert.equal(await shadowRead(pageA, '.node[data-ring="inner"]'), 8);
     assert.equal(await shadowRead(pageA, '.node[data-ring="outer"]'), 16);
+    const fullOrder = await verifyClockwiseOrder(pageA, "24 个自定义标签", customSaved.map(item => item.id));
+    for (const [count, snapshot] of orderSnapshots) {
+      for (const previous of snapshot.nodes.filter(node => node.id !== "__add__")) {
+        const current = fullOrder.nodes.find(node => node.id === previous.id);
+        assert.ok(current);
+        assert.equal(current.ring, previous.ring, `从 ${count} 增至 24 时不能移圈`);
+        const delta = current.angle - previous.angle;
+        assert.ok(Math.abs(Math.atan2(Math.sin(delta), Math.cos(delta))) < .0001, `从 ${count} 增至 24 时不能改变已有标签的角槽`);
+      }
+    }
+    assert.equal(orderSnapshots.size, 2);
+    pass("9、12、24 个自定义标签固定前 8 在内圈，余下在外圈；各圈从 12 点按序顺时针且已有槽位不跳动");
     await pageA.screenshot({ path: path.join(runDir, "wheel-twentyfour.png") });
     await moveTo(pageA, nodeSelector(itemB.id));
     await until(async () => (await shadowRead(pageA, nodeSelector(itemB.id), "scale")) > 1.13, "双圈预览悬停放大未完成");
@@ -385,6 +469,52 @@ async function clickShadow(page, selector) {
       const page = await context.newPage(); await page.goto(base + "/tab/" + i);
     }
     await setPopupMode("all");
+    const beforeDrag = await browserTabsOrdered(tabA.windowId);
+    const dragged = beforeDrag.filter(tab => tab.windowId === tabA.windowId && tab.id !== tabA.id).at(-1);
+    assert.ok(dragged);
+    await worker.evaluate(async tabId => chrome.tabs.move(tabId, { index: 0 }), dragged.id);
+    const afterDrag = await browserTabsOrdered(tabA.windowId);
+    assert.equal(afterDrag[0].id, dragged.id, "真实浏览器标签应已经移到最左侧");
+    assert.notDeepEqual(afterDrag.map(tab => tab.id), beforeDrag.map(tab => tab.id));
+    await openWheel(pageA);
+    const reordered = await getState();
+    assert.deepEqual(reordered.wheelItems.map(item => item.tabId), afterDrag.map(tab => tab.id));
+    await verifyClockwiseOrder(pageA, "真实标签拖动后的所有模式", reordered.wheelItems.slice(0, 24).map(item => item.id));
+    await pageA.screenshot({ path: path.join(runDir, "wheel-browser-order.png") });
+    await cancel(pageA);
+    await pageB.bringToFront();
+    assert.deepEqual((await getState()).wheelItems.map(item => item.tabId), afterDrag.map(tab => tab.id), "切换 active 页面不能改成最近使用顺序");
+    pass("真实 chrome.tabs.move 改变浏览器 index 后，所有标签从左到右顺时针呈现，active 变化不改成最近使用顺序");
+
+    await setPopupMode("custom");
+    assert.deepEqual((await getItems()).map(item => ({ id: item.id, tabId: item.tabId })), customSaved);
+    await openWheel(pageA);
+    await verifyClockwiseOrder(pageA, "浏览器拖动后的自定义模式", customSaved.map(item => item.id));
+    await cancel(pageA);
+    pass("真实浏览器拖动标签后，自定义仍保持用户的收藏顺序和顺时针编号");
+    await setPopupMode("all");
+
+    const crossPage = await until(async () => context.pages().find(page => page.url() === base + "/tab/3"), "跨窗口测试页面不可用");
+    await openWheel(crossPage);
+    const crossExpected = await browserTabsOrdered(crossWindow.windowId);
+    const crossState = await getState();
+    // popup 没有 sender.tab；这里只借用其全量 item ID 映射，实际窗口顺序读取 crossPage。
+    const crossItemsByTab = new Map(crossState.wheelItems.map(item => [item.tabId, item.id]));
+    const crossVisibleTabs = crossExpected.slice(0, 24).map(tab => tab.id);
+    await until(async () => {
+      const nodes = await shadowRead(crossPage, ".node", "boxes");
+      return JSON.stringify(nodes?.map(node => Number(node.tabId))) === JSON.stringify(crossVisibleTabs);
+    }, "跨窗口轮盘节点未按呼出页面所在窗口的浏览器 index 排列");
+    assert.deepEqual((await shadowRead(crossPage, ".node", "boxes")).map(node => Number(node.tabId)), crossVisibleTabs);
+    assert.equal(crossExpected[0].windowId, crossWindow.windowId);
+    const crossVisibleItems = crossVisibleTabs.map(tabId => {
+      assert.ok(crossItemsByTab.has(tabId), "跨窗口标签应存在于全量映射中");
+      return crossItemsByTab.get(tabId);
+    });
+    await verifyClockwiseOrder(crossPage, "另一窗口呼出的所有模式", crossVisibleItems);
+    await cancel(crossPage);
+    pass("从另一浏览器窗口呼出时优先该窗口，窗口内仍按浏览器 index 顺时针");
+    await popup.bringToFront();
     const allState = await getState();
     const pageCount = Math.ceil(allState.wheelItems.length / 24);
     assert.ok(allState.totalTabs > 24);
@@ -397,6 +527,7 @@ async function clickShadow(page, selector) {
     assert.equal(await shadowRead(pageA, '.node[data-ring="outer"]'), 16);
     assert.equal(await shadowRead(pageA, ".veil", "attribute", "data-page"), "1");
     assert.equal(await shadowRead(pageA, ".veil", "attribute", "data-pages"), String(pageCount));
+    await verifyClockwiseOrder(pageA, "所有标签第一页", allState.wheelItems.slice(0, 24).map(item => item.id));
     const firstPage = await shadowRead(pageA, ".node", "boxes");
     await moveTo(pageA, nodeSelector(firstPage[0].id));
     const cursor = await shadowRead(pageA, nodeSelector(firstPage[0].id), "box");
@@ -416,6 +547,7 @@ async function clickShadow(page, selector) {
     }
     const lastPage = await shadowRead(pageA, ".node", "boxes");
     assert.deepEqual(lastPage.map(box => box.id), allState.wheelItems.slice((pageCount - 1) * 24).map(item => item.id));
+    await verifyClockwiseOrder(pageA, "所有标签最后一页", allState.wheelItems.slice((pageCount - 1) * 24).map(item => item.id), { offset: (pageCount - 1) * 24 });
     await verifyGeometry(pageA, "所有标签最后一页", lastPage.length);
     await pageA.screenshot({ path: path.join(runDir, "wheel-all-last-page.png") });
     const lastTarget = allState.wheelItems.at(-1);

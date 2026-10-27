@@ -227,6 +227,18 @@ async function currentWindowId(sender) {
 
 async function handleMessage(message, sender) {
   const state = await readState();
+  let windowId = null;
+  if (['wheel:get-state', 'wheel:list-tabs', 'wheel:set-mode'].includes(message.type)) {
+    windowId = await currentWindowId(sender);
+    // Keep each window's tab-strip order; only move the invoking window first.
+    // Do this after resolving saved items so custom ordering stays untouched.
+    if (Number.isInteger(windowId)) {
+      state.tabs = [
+        ...state.tabs.filter((tab) => tab.windowId === windowId),
+        ...state.tabs.filter((tab) => tab.windowId !== windowId)
+      ];
+    }
+  }
   const { items, tabs, settings, currentSession } = state;
   switch (message.type) {
     case 'wheel:get-state':
@@ -238,7 +250,6 @@ async function handleMessage(message, sender) {
       return publicState({ ...state, settings: nextSettings });
     }
     case 'wheel:list-tabs': {
-      const windowId = await currentWindowId(sender);
       return {
         ...publicState(state),
         tabs: tabs.map((tab) => ({
